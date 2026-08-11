@@ -1505,14 +1505,24 @@ func (h *Hasher) merkleizeProgressiveImpl(dst, chunks []byte, depth uint8) []byt
 	return append(dst, h.tmp[:32]...)
 }
 
-// Hash returns the last 32 bytes of the buffer. Outstanding background
-// reductions are drained first so no unfilled hole can be exposed.
+// Hash returns the last 32 bytes of the buffer, flushing pending deferred
+// chunks first so the tail holds the latest merkleize result. Outstanding
+// background reductions are awaited only when their hole can overlap the
+// tail; holes below it are left to fill in the background. The returned
+// slice is only valid until the next hasher operation.
 func (h *Hasher) Hash() []byte {
-	h.drainJobs()
+	if h.layerCount >= 0 {
+		layer := &h.layers[h.layerCount]
+		if layer.pendCount > 0 {
+			h.flushPending(layer, false)
+		}
+	}
+
 	start := 0
 	if len(h.buf) > 32 {
 		start = len(h.buf) - 32
 	}
+	h.drainJobsFor(start)
 	return h.buf[start:]
 }
 
