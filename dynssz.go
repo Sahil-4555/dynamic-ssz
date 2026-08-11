@@ -306,7 +306,7 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 	}
 
 	newBuf := encoder.GetBuffer()
-	if uint32(len(newBuf)) != size {
+	if int64(len(newBuf)) != size {
 		return nil, fmt.Errorf("ssz length does not match expected length (expected: %v, got: %v)", size, len(newBuf))
 	}
 
@@ -387,13 +387,15 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 	if err != nil {
 		return nil, err
 	}
-	// SSZ sizes are uint32; reject only what cannot be represented as an int on
-	// this platform, accounting for the existing buffer length so len(buf)+size
-	// cannot overflow int. SizeSSZ applies the same ceiling so the paths agree.
-	if uint64(size) > uint64(math.MaxInt)-uint64(len(buf)) {
+	// Reject a size that cannot be represented as an int on this platform,
+	// accounting for the existing buffer length so len(buf)+size cannot
+	// overflow int. SizeSSZ applies the same ceiling so the paths agree. The
+	// bound stays in the signed domain so the int conversion below is provably
+	// within range.
+	if size < 0 || size > int64(math.MaxInt)-int64(len(buf)) {
 		return nil, fmt.Errorf("SSZ size %d exceeds platform int max", size)
 	}
-	needed := len(buf) + int(size)
+	needed := len(buf) + sszutils.CapToInt(uint64(size))
 	if cap(buf) < needed {
 		grown := make([]byte, len(buf), needed)
 		copy(grown, buf)
@@ -407,7 +409,7 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 	}
 
 	newBuf := encoder.GetBuffer()
-	if uint32(len(newBuf)-len(buf)) != size {
+	if int64(len(newBuf)-len(buf)) != size {
 		return nil, fmt.Errorf("ssz length does not match expected length (expected: %v, got: %v)", size, len(newBuf)-len(buf))
 	}
 
@@ -557,7 +559,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 	// Parity with the buffer path: reject output whose length disagrees with the
 	// precomputed size (e.g. a nested delegated marshaler whose SizeSSZ contradicts
 	// the bytes it writes), which would otherwise stream malformed SSZ silently.
-	if uint32(encoder.GetPosition()) != size {
+	if int64(encoder.GetPosition()) != size {
 		return fmt.Errorf("ssz length does not match expected length (expected: %v, got: %v)", size, encoder.GetPosition())
 	}
 	return nil
@@ -644,16 +646,13 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
 		return 0, err
 	}
 
-	// SSZ sizes are uint32; only reject what cannot be represented as an int on
-	// this platform. On 64-bit the full uint32 range is valid; on 32-bit a size
-	// above the int max cannot be returned safely. int64 holds every uint32, so
-	// the bound check and conversion operate on the same value.
-	sz := int64(size)
-	if sz > math.MaxInt {
+	// Reject a size that cannot be represented as an int on this platform; the
+	// bound stays in the signed domain so the conversion is provably in range.
+	if size < 0 || size > math.MaxInt {
 		return 0, fmt.Errorf("SSZ size %d exceeds platform int max", size)
 	}
 
-	return int(sz), nil
+	return int(size), nil
 }
 
 // UnmarshalSSZ decodes the given SSZ-encoded data into the target object.

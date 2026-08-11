@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/pk910/dynamic-ssz/hasher"
+	"github.com/pk910/dynamic-ssz/reflection"
 	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
@@ -835,6 +836,14 @@ type testLargeContainer struct {
 // SizeSSZ platform behavior for >MaxInt32 sizes is covered by
 // TestSizeAboveMaxInt32 (accepted on 64-bit, rejected on 32-bit).
 
+// skipUnless64Bit skips the test on platforms where int is 32 bits wide.
+func skipUnless64Bit(t *testing.T) {
+	t.Helper()
+	if math.MaxInt <= math.MaxInt32 {
+		t.Skip("requires a 64-bit platform")
+	}
+}
+
 // skipUnless32Bit skips the test on platforms where int is wider than 32 bits.
 func skipUnless32Bit(t *testing.T) {
 	t.Helper()
@@ -849,8 +858,8 @@ func TestMarshalSSZLargeObjectOverflow(t *testing.T) {
 	container := &testLargeContainer{}
 
 	_, err := ds.MarshalSSZ(container)
-	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
-		t.Fatalf("expected 'exceeds platform int max' error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "platform int") {
+		t.Fatalf("expected a platform integer range error, got: %v", err)
 	}
 }
 
@@ -860,8 +869,8 @@ func TestMarshalSSZToLargeObjectOverflow(t *testing.T) {
 	container := &testLargeContainer{}
 
 	_, err := ds.MarshalSSZTo(container, nil)
-	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
-		t.Fatalf("expected 'exceeds platform int max' error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "platform int") {
+		t.Fatalf("expected a platform integer range error, got: %v", err)
 	}
 }
 
@@ -872,8 +881,8 @@ func TestMarshalSSZWriterLargeObjectOverflow(t *testing.T) {
 
 	var buf bytes.Buffer
 	err := ds.MarshalSSZWriter(container, &buf)
-	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
-		t.Fatalf("expected 'exceeds platform int max' error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "platform int") {
+		t.Fatalf("expected a platform integer range error, got: %v", err)
 	}
 }
 
@@ -908,8 +917,8 @@ func TestHashTreeRootLargeObjectOverflow(t *testing.T) {
 	container := &testLargeContainer{}
 
 	_, err := ds.HashTreeRoot(container)
-	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
-		t.Fatalf("expected 'exceeds platform int max' error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "platform int") {
+		t.Fatalf("expected a platform integer range error, got: %v", err)
 	}
 }
 
@@ -4498,65 +4507,82 @@ func TestOptionalVectorPaddingSizeAgreement(t *testing.T) {
 func TestDescriptorSizeOverflowRejected(t *testing.T) {
 	ds := NewDynSsz(nil)
 
-	t.Run("vector product wraps", func(t *testing.T) {
-		// 8 (uint64) * 536870912 == 2^32
+	t.Run("vector product exceeds platform range", func(t *testing.T) {
+		// 8 (uint64) * 2^60 == 2^63, past the platform integer range.
 		type T struct {
-			L [][]uint64 `ssz-max:"10" ssz-size:"?,536870912"`
+			L [][]uint64 `ssz-max:"10" ssz-size:"?,1152921504606846976"`
 		}
 		var v T
 		err := ds.UnmarshalSSZ(&v, []byte{4, 0, 0, 0, 0, 0, 0, 0})
 		if err == nil {
-			t.Fatal("expected descriptor error for wrapped vector size")
+			t.Fatal("expected descriptor error for overflowing vector size")
 		}
 	})
 
 	t.Run("vector in container", func(t *testing.T) {
 		type T struct {
 			A uint64
-			V []uint64 `ssz-size:"536870912"`
+			V []uint64 `ssz-size:"1152921504606846976"`
 			B uint64
 		}
 		var v T
 		err := ds.UnmarshalSSZ(&v, make([]byte, 16))
 		if err == nil {
-			t.Fatal("expected descriptor error for wrapped vector size")
+			t.Fatal("expected descriptor error for overflowing vector size")
 		}
 	})
 
-	t.Run("container sum wraps", func(t *testing.T) {
-		// Each field fits in uint32, the sum does not.
+	t.Run("container sum exceeds platform range", func(t *testing.T) {
+		// Each field fits the platform range, the sum does not.
 		type T struct {
-			A []byte `ssz-size:"3000000000"`
-			B []byte `ssz-size:"3000000000"`
+			A []byte `ssz-size:"4611686018427387904"`
+			B []byte `ssz-size:"4611686018427387904"`
 		}
 		var v T
 		err := ds.UnmarshalSSZ(&v, make([]byte, 16))
 		if err == nil {
-			t.Fatal("expected descriptor error for wrapped container size")
+			t.Fatal("expected descriptor error for overflowing container size")
 		}
 	})
 
-	t.Run("multi-dim product wraps", func(t *testing.T) {
-		// 8 * 65536 * 65536 wraps; each nesting level guards its own product,
+	t.Run("multi-dim product exceeds platform range", func(t *testing.T) {
+		// 8 * 2^30 * 2^30 == 2^63; each nesting level guards its own product,
 		// and ValidateType shares the guarded build path.
 		type T struct {
-			V [][]uint64 `ssz-size:"65536,65536"`
+			V [][]uint64 `ssz-size:"1073741824,1073741824"`
 		}
 		if err := ds.ValidateType(reflect.TypeOf(T{})); err == nil {
-			t.Fatal("ValidateType should reject the wrapped multi-dim size")
+			t.Fatal("ValidateType should reject the overflowing multi-dim size")
 		}
 		var v T
 		if err := ds.UnmarshalSSZ(&v, make([]byte, 8)); err == nil {
-			t.Fatal("expected descriptor error for wrapped multi-dim size")
+			t.Fatal("expected descriptor error for overflowing multi-dim size")
 		}
 	})
 
-	t.Run("three-dim product wraps", func(t *testing.T) {
+	t.Run("three-dim product exceeds platform range", func(t *testing.T) {
+		// 4 * 2^21 * 2^21 * 2^21 == 2^65 overflows at the outermost level.
 		type T struct {
-			V [][][]uint32 `ssz-size:"4096,4096,4096"`
+			V [][][]uint32 `ssz-size:"2097152,2097152,2097152"`
 		}
 		if err := ds.ValidateType(reflect.TypeOf(T{})); err == nil {
-			t.Fatal("ValidateType should reject the wrapped three-dim size")
+			t.Fatal("ValidateType should reject the overflowing three-dim size")
+		}
+	})
+
+	t.Run("large sizes within the platform range are valid", func(t *testing.T) {
+		// 8 * 8192 * 65536 == 2^32: past the former uint32 bound, valid SSZ
+		// wherever the platform integer range holds it.
+		type T struct {
+			V [][]uint64 `ssz-size:"65536,8192"`
+		}
+		err := ds.ValidateType(reflect.TypeOf(T{}))
+		if uint64(1)<<32 <= uint64(math.MaxInt) {
+			if err != nil {
+				t.Fatalf("ValidateType should accept a size within the platform range: %v", err)
+			}
+		} else if err == nil {
+			t.Fatal("ValidateType should reject a size past the platform range")
 		}
 	})
 
@@ -4723,8 +4749,17 @@ func TestSizeSSZValueOverflowRejected(t *testing.T) {
 	if err != nil || sz != 4+268435456 {
 		t.Fatalf("n=1: size=%d err=%v", sz, err)
 	}
-	if _, err := ds.SizeSSZ(&OuterList{Items: make([]InnerHuge, 17)}); err == nil {
-		t.Error("expected error for a value size exceeding the uint32 range")
+	// 17 elements put the total past the former uint32 bound; sizes are valid
+	// up to the platform integer range, past which SizeSSZ reports the
+	// platform bound instead of wrapping.
+	const total = int64(4) + 17*268435456
+	sz, err = ds.SizeSSZ(&OuterList{Items: make([]InnerHuge, 17)})
+	if total > math.MaxInt {
+		if err == nil {
+			t.Errorf("n=17: expected platform overflow error, got size %d", sz)
+		}
+	} else if err != nil || int64(sz) != total {
+		t.Errorf("n=17: size=%d err=%v", sz, err)
 	}
 }
 
@@ -6309,4 +6344,227 @@ func TestWithAsyncHashing(t *testing.T) {
 	if got, err := native.HashTreeRoot(source); err != nil || got != want {
 		t.Errorf("native-hash instance root %x (err %v) != %x", got, err, want)
 	}
+}
+
+// negSizeCustom reports a negative size; the marshal and size entry points
+// reject it before any allocation.
+type negSizeCustom struct{}
+
+var _ = sszutils.Annotate[negSizeCustom](`ssz-type:"custom"`)
+
+func (n *negSizeCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return -1 }
+
+func (n *negSizeCustom) MarshalSSZEncoder(_ sszutils.DynamicSpecs, _ sszutils.Encoder) error {
+	return nil
+}
+
+func (n *negSizeCustom) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, _ sszutils.Decoder) error {
+	return nil
+}
+
+func (n *negSizeCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+// hugeSizeCustom claims 2GiB-1 per value while writing a single byte, driving
+// offset arithmetic past the 4-byte range without the memory cost.
+type hugeSizeCustom struct{}
+
+var _ = sszutils.Annotate[hugeSizeCustom](`ssz-type:"custom"`)
+
+func (h *hugeSizeCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return math.MaxInt32 }
+
+func (h *hugeSizeCustom) MarshalSSZEncoder(_ sszutils.DynamicSpecs, e sszutils.Encoder) error {
+	e.EncodeUint8(0)
+	return nil
+}
+
+func (h *hugeSizeCustom) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, _ sszutils.Decoder) error {
+	return nil
+}
+
+func (h *hugeSizeCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+// emptyDynCustom claims zero bytes and occupies zero Go bytes, so a billion
+// elements build an offset table past the offset range at no memory cost.
+type emptyDynCustom struct{}
+
+var _ = sszutils.Annotate[emptyDynCustom](`ssz-type:"custom"`)
+
+func (h *emptyDynCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 0 }
+
+func (h *emptyDynCustom) MarshalSSZEncoder(_ sszutils.DynamicSpecs, _ sszutils.Encoder) error {
+	return nil
+}
+
+func (h *emptyDynCustom) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, _ sszutils.Decoder) error {
+	return nil
+}
+
+func (h *emptyDynCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+// A negative size from a delegated sizer must surface as an error from every
+// size-consuming entry point rather than wrapping into an allocation.
+func TestMarshalNegativeDelegatedSize(t *testing.T) {
+	ds := NewDynSsz(nil, WithExtendedTypes(), WithNoDelegation(), WithNoFastSsz())
+	v := &negSizeCustom{}
+
+	if _, err := ds.MarshalSSZ(v); err == nil {
+		t.Error("MarshalSSZ should reject a negative size")
+	}
+	if _, err := ds.MarshalSSZTo(v, nil); err == nil {
+		t.Error("MarshalSSZTo should reject a negative size")
+	}
+	if _, err := ds.SizeSSZ(v); err == nil {
+		t.Error("SizeSSZ should reject a negative size")
+	}
+}
+
+// Claimed element sizes drive the offset tables the streaming marshal writes
+// before the bodies; totals past the 4-byte offset range must reject instead
+// of truncating. The claims come from lying sizers, so no real memory moves.
+func TestMarshalWriterOffsetOverflow(t *testing.T) {
+	ds := NewDynSsz(nil, WithExtendedTypes())
+
+	expectOffsetErr := func(t *testing.T, err error) {
+		t.Helper()
+		// On 32-bit platforms the size walk rejects the claimed totals with
+		// the platform range error before any offset write runs; both verdicts
+		// reject the value.
+		if math.MaxInt <= math.MaxInt32 {
+			if err == nil {
+				t.Error("expected an error for the oversized claims")
+			}
+			return
+		}
+		if err == nil || !errors.Is(err, sszutils.ErrOffset) {
+			t.Errorf("expected offset range error, got: %v", err)
+		}
+	}
+
+	t.Run("list offset table", func(t *testing.T) {
+		// The reflection context is driven on a bare list root: any wrapper
+		// would size-walk the billion no-op elements before marshaling starts,
+		// while the list path itself rejects at the first offset write.
+		v := make([]emptyDynCustom, (1<<30)+1)
+		desc, err := ds.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(v), nil, []ssztypes.SszMaxSizeHint{{Size: 2000000000}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := reflection.NewReflectionCtx(ds, nil, false, true, false, 0)
+		expectOffsetErr(t, ctx.MarshalSSZ(desc, reflect.ValueOf(v), sszutils.NewStreamEncoder(io.Discard, 0)))
+	})
+
+	t.Run("list offsets accumulate", func(t *testing.T) {
+		type L struct {
+			Items []hugeSizeCustom `ssz-max:"16"`
+		}
+		v := &L{Items: make([]hugeSizeCustom, 3)}
+		expectOffsetErr(t, ds.MarshalSSZWriter(v, io.Discard))
+	})
+
+	t.Run("vector offsets accumulate", func(t *testing.T) {
+		type V struct {
+			Items []hugeSizeCustom `ssz-size:"3"`
+		}
+		v := &V{Items: make([]hugeSizeCustom, 3)}
+		expectOffsetErr(t, ds.MarshalSSZWriter(v, io.Discard))
+	})
+
+	t.Run("vector zero-fill offsets accumulate", func(t *testing.T) {
+		type V struct {
+			Items []hugeSizeCustom `ssz-size:"4"`
+		}
+		v := &V{Items: make([]hugeSizeCustom, 1)}
+		expectOffsetErr(t, ds.MarshalSSZWriter(v, io.Discard))
+	})
+
+	t.Run("container field offsets", func(t *testing.T) {
+		type C struct {
+			A hugeSizeCustom `ssz-type:"custom"`
+			B hugeSizeCustom `ssz-type:"custom"`
+			C hugeSizeCustom `ssz-type:"custom"`
+		}
+		expectOffsetErr(t, ds.MarshalSSZWriter(&C{}, io.Discard))
+	})
+}
+
+// inflatingEncoder is seekable and reports positions far past the bytes it
+// receives, so the post-marshal offset patches see encodings past the 4-byte
+// offset range without the memory cost.
+type inflatingEncoder struct{ pos int }
+
+func (e *inflatingEncoder) Seekable() bool { return true }
+func (e *inflatingEncoder) GetPosition() int {
+	e.pos += 1 << 30
+	return e.pos
+}
+func (e *inflatingEncoder) GetBuffer() []byte              { return nil }
+func (e *inflatingEncoder) SetBuffer(_ []byte)             {}
+func (e *inflatingEncoder) EncodeBool(_ bool)              {}
+func (e *inflatingEncoder) EncodeUint8(_ uint8)            {}
+func (e *inflatingEncoder) EncodeUint16(_ uint16)          {}
+func (e *inflatingEncoder) EncodeUint32(_ uint32)          {}
+func (e *inflatingEncoder) EncodeUint64(_ uint64)          {}
+func (e *inflatingEncoder) EncodeBytes(_ []byte)           {}
+func (e *inflatingEncoder) EncodeOffset(_ uint32)          {}
+func (e *inflatingEncoder) EncodeOffsetAt(_ int, _ uint32) {}
+func (e *inflatingEncoder) EncodeZeroPadding(_ int)        {}
+
+// The seekable marshal paths patch offsets from real encoder positions after
+// each element; positions past the 4-byte offset range must reject instead of
+// truncating.
+func TestMarshalSeekableOffsetOverflow(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	run := func(t *testing.T, v any) {
+		t.Helper()
+		desc, err := ds.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(v), nil, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := reflection.NewReflectionCtx(ds, nil, false, true, false, 0)
+		if err := ctx.MarshalSSZ(desc, reflect.ValueOf(v), &inflatingEncoder{}); err == nil || !errors.Is(err, sszutils.ErrOffset) {
+			t.Errorf("expected offset range error, got: %v", err)
+		}
+	}
+
+	t.Run("vector element patches", func(t *testing.T) {
+		type V struct {
+			Items [][]uint8 `ssz-size:"8" ssz-max:"?,16"`
+		}
+		run(t, &V{Items: [][]uint8{{1}, {2}, {3}, {4}, {5}, {6}, {7}, {8}}})
+	})
+
+	t.Run("vector zero-fill patches", func(t *testing.T) {
+		type V struct {
+			Items [][]uint8 `ssz-size:"8" ssz-max:"?,16"`
+		}
+		run(t, &V{Items: [][]uint8{{1}}})
+	})
+
+	t.Run("list element patches", func(t *testing.T) {
+		type L struct {
+			Items [][]uint8 `ssz-max:"16,16"`
+		}
+		run(t, &L{Items: [][]uint8{{1}, {2}, {3}, {4}, {5}, {6}, {7}, {8}}})
+	})
+
+	t.Run("container field patches", func(t *testing.T) {
+		// The container patch accumulator holds encoder positions in int;
+		// positions past the 32-bit range cannot exist on a 32-bit platform.
+		skipUnless64Bit(t)
+		type C struct {
+			A []uint8 `ssz-max:"16"`
+			B []uint8 `ssz-max:"16"`
+			C []uint8 `ssz-max:"16"`
+			D []uint8 `ssz-max:"16"`
+			E []uint8 `ssz-max:"16"`
+		}
+		run(t, &C{})
+	})
 }

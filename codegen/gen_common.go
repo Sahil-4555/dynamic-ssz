@@ -8,13 +8,27 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
 )
 
-const varNameVLen = "vlen"
+const (
+	varNameVLen     = "vlen"
+	varNameElemSize = "elemSize"
+)
+
+// convSuppressComment rides emitted lines that convert a resolved ctx.exprs
+// value to int. The value is bounded by the platform-size guard emitted at
+// resolution, but CodeQL and gosec do not carry range facts through array
+// elements, so the exact conversion is flagged. gosec requires #nosec at the
+// comment start; the lgtm marker is CodeQL's end-of-line suppression form
+// (codeql[...] only works as a standalone line), matched anywhere in the
+// comment, and takes effect in scans that include the alert-suppression
+// queries.
+const convSuppressComment = " // #nosec G115 lgtm[go/incorrect-integer-conversion] -- bounded by the platform-size guard at spec resolution"
 
 // Generated error expression constants shared across codegen files.
 const (
@@ -76,6 +90,34 @@ func (g *exprVarGenerator) getExprVar(expr string, defaultValue uint64) string {
 
 	g.varMap[exprKey] = exprVar
 
+	return exprVar
+}
+
+// getSizeExprVar resolves a size-domain spec expression (a vector or byte
+// size, as opposed to a list limit) via getExprVar and additionally rejects a
+// resolved value above the platform integer range: sizes pass through int at
+// their use sites (allocations, loop bounds, the int-based codec surface), so
+// the guard makes those conversions exact. List limits keep their full uint64
+// range by resolving through getExprVar directly.
+func (g *exprVarGenerator) getSizeExprVar(expr string, defaultValue uint64) string {
+	if expr == "" {
+		return fmt.Sprintf("%v", defaultValue)
+	}
+
+	exprVar := g.getExprVar(expr, defaultValue)
+
+	guardKey := sha256.Sum256([]byte(fmt.Sprintf("sizeguard\n%s\n%v", expr, defaultValue)))
+	if _, ok := g.varMap[guardKey]; ok {
+		return exprVar
+	}
+
+	mathPkgName := g.typePrinter.AddImport("math", "math")
+	appendCode(g.codeBuf, 0, "if %s > %s.MaxInt {\n", exprVar, mathPkgName)
+	appendCode(g.codeBuf, 1, "err = sszutils.ErrPlatformOverflowFn(\"size expression %s\", %s)\n", expr, exprVar)
+	appendCode(g.codeBuf, 1, "return %s\n", g.retVars)
+	appendCode(g.codeBuf, 0, "}\n")
+
+	g.varMap[guardKey] = exprVar
 	return exprVar
 }
 
@@ -142,7 +184,9 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 	// implement DynamicSizer (fullyDelegatesSSZ requires it), so that is the only
 	// case to handle here.
 	if desc.SszType == ssztypes.SszUnspecifiedType && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 {
-		appendCode(g.codeBuf, 0, "%s := new(%s).SizeSSZDyn(ds)\n", sizeVar, g.typePrinter.InnerTypeString(desc))
+		// The sizer speaks int; clamping a misbehaving negative to zero keeps
+		// the unsigned sum from wrapping huge.
+		appendCode(g.codeBuf, 0, "%s := uint64(sszutils.Max(new(%s).SizeSSZDyn(ds), 0))\n", sizeVar, g.typePrinter.InnerTypeString(desc))
 		g.varMap[descHash] = sizeVar
 		return sizeVar, nil
 	}
@@ -206,13 +250,17 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 				if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 && desc.BitSize > 0 {
 					defaultValue = uint64(desc.BitSize)
 				}
-				exprVar := g.exprVarGenerator.getExprVar(*sizeExpression, defaultValue)
+				exprVar := g.exprVarGenerator.getSizeExprVar(*sizeExpression, defaultValue)
 
 				if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
 					exprVar = fmt.Sprintf("(%s+7)/8", exprVar)
 				}
 
-				appendCode(g.codeBuf, 0, "%s := %s * int(%s)\n", sizeVar, itemSizeVar, exprVar)
+				appendCode(g.codeBuf, 0, "%s := %s * %s\n", sizeVar, itemSizeVar, exprVar)
+			} else if _, lerr := strconv.ParseUint(itemSizeVar, 10, 64); lerr == nil {
+				// A fully literal product needs the explicit uint64 type to
+				// join the other unsigned size variables.
+				appendCode(g.codeBuf, 0, "%s := uint64(%s * %d)\n", sizeVar, itemSizeVar, desc.Len)
 			} else {
 				appendCode(g.codeBuf, 0, "%s := %s * %d\n", sizeVar, itemSizeVar, desc.Len)
 			}
@@ -360,12 +408,12 @@ func minSizeExpr(desc *ssztypes.TypeDescriptor, sizeVars *staticSizeVarGenerator
 			return expr, "", exprOk && desc.Len > 0
 		}
 
-		count := fmt.Sprintf("int(%s)", sizeVars.exprVarGenerator.getExprVar(*desc.SizeExpression, uint64(desc.Len)))
+		count := sizeVars.exprVarGenerator.getSizeExprVar(*desc.SizeExpression, uint64(desc.Len))
 		expr, exprOk := mulOrAddExpr("*", count, perElem)
 
 		// The product is what the caller divides by, so it is what has to be
 		// checked: a spec value large enough to overflow the multiplication
-		// lands on zero or a negative, neither of which bounds anything. The
+		// wraps to zero or a small value, neither of which bounds anything. The
 		// reflection engine drops such a product for the same reason.
 		return expr, expr, exprOk
 
@@ -423,4 +471,41 @@ func localizedVarName(varName string, indent int) string {
 		return "t2"
 	}
 	return "t"
+}
+
+// intCapExpr returns expr usable as an int capacity cap. A capacity above the
+// platform integer range clamps to math.MaxInt — the limit check itself
+// compares in uint64, so nothing is lost — while a plain conversion of a
+// 64-bit limit could wrap negative. Integer literals are resolved at
+// generation time: small ones pass through untouched, larger ones emit the
+// runtime clamp so the generated code compiles on 32-bit platforms too. The
+// qualified helper keeps the generated code clear of the bare min builtin,
+// which a target package may shadow.
+func intCapExpr(expr string) string {
+	if v, err := strconv.ParseUint(expr, 10, 64); err == nil && v <= math.MaxInt32 {
+		return expr
+	}
+	return fmt.Sprintf("sszutils.CapToInt(%s)", expr)
+}
+
+// uintCmpExpr renders a length comparison against a resolved size or limit.
+// Expression values compare in uint64 (lengths are never negative, and the
+// resolved value spans the full range); literals in the portable int range
+// compare as plain int constants, sparing the pointless cast.
+func uintCmpExpr(lenExpr, op, limit string) string {
+	if v, err := strconv.ParseUint(limit, 10, 64); err == nil && v <= math.MaxInt32 {
+		return fmt.Sprintf("%s %s %s", lenExpr, op, limit)
+	}
+	return fmt.Sprintf("uint64(%s) %s %s", lenExpr, op, limit)
+}
+
+// uintLitArg types an integer literal above the portable int range as uint64
+// for splicing into an `any` argument (error constructors). An untyped
+// constant there defaults to int, which does not compile for values past the
+// target's int width. Variables and smaller literals pass through untouched.
+func uintLitArg(expr string) string {
+	if v, err := strconv.ParseUint(expr, 10, 64); err == nil && v > math.MaxInt32 {
+		return fmt.Sprintf("uint64(%s)", expr)
+	}
+	return expr
 }

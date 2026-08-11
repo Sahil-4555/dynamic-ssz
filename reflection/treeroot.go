@@ -356,7 +356,7 @@ func (ctx *ReflectionCtx) buildRootFromLargeUint(sourceType *ssztypes.TypeDescri
 		sourceValue = sourceValPtr.Elem()
 	}
 
-	sourceLen := uint32(sourceValue.Len())
+	sourceLen := int64(sourceValue.Len())
 	expectedLen := sourceType.Size / sourceType.ElemDesc.Size
 	if sourceLen > expectedLen {
 		return sszutils.ErrVectorLengthFn(sourceLen, expectedLen)
@@ -369,7 +369,7 @@ func (ctx *ReflectionCtx) buildRootFromLargeUint(sourceType *ssztypes.TypeDescri
 	isUint64 := sourceType.ElemDesc.Kind == reflect.Uint64
 	if isUint64 {
 		for i := 0; i < int(sourceType.Size/8); i++ {
-			if uint32(i) < sourceLen {
+			if int64(i) < sourceLen {
 				hh.AppendUint64(sourceValue.Index(i).Uint())
 			} else {
 				hh.AppendUint64(0)
@@ -378,10 +378,10 @@ func (ctx *ReflectionCtx) buildRootFromLargeUint(sourceType *ssztypes.TypeDescri
 	} else {
 		b := sourceValue.Bytes()
 		hh.Append(b)
-		// int64 keeps the widening conversion from the uint32 size safe on every
-		// platform (a large-uint width is only ever 16 or 32, but the size is a
-		// spec-derived uint32 the compiler cannot bound).
-		if pad := int64(sourceType.Size) - int64(len(b)); pad > 0 {
+		// The subtraction runs in int64 so an over-long value yields a negative
+		// pad instead of wrapping (a large-uint width is only ever 16 or 32,
+		// but the size is spec-derived and the compiler cannot bound it).
+		if pad := sourceType.Size - int64(len(b)); pad > 0 {
 			hh.Append(sszutils.ZeroBytes()[:pad])
 		}
 	}
@@ -627,7 +627,7 @@ func (ctx *ReflectionCtx) buildRootFromUnion(sourceType *ssztypes.TypeDescriptor
 //   - Byte arrays use PutBytes for efficient chunk-based hashing
 //   - Arrays with max size hints include length mixing for proper limits
 func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, depth reflectionDepth) error {
-	vecLen := int64(sourceType.Len)
+	vecLen := sourceType.Len
 	if vecLen > math.MaxInt {
 		return sszutils.ErrPlatformOverflowFn("vector length", sourceType.Len)
 	}
@@ -635,7 +635,7 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 	hashIndex := hh.StartTree(sszutils.TreeTypeBinary)
 
 	sliceLen := sourceValue.Len()
-	if uint32(sliceLen) > sourceType.Len {
+	if int64(sliceLen) > sourceType.Len {
 		if sourceType.Kind == reflect.Array {
 			sliceLen = int(vecLen)
 		} else {
@@ -644,7 +644,7 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 	}
 
 	appendZero := 0
-	if uint32(sliceLen) < sourceType.Len {
+	if int64(sliceLen) < sourceType.Len {
 		appendZero = int(vecLen) - sliceLen
 	}
 

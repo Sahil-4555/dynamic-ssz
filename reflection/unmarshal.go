@@ -326,7 +326,7 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 // incremental — and is bounded by the decoder's maximum stream size.
 func delegationBuffer(targetType *ssztypes.TypeDescriptor, decoder sszutils.Decoder) ([]byte, error) {
 	if targetType.Size > 0 {
-		typeSize := int64(targetType.Size)
+		typeSize := targetType.Size
 		if typeSize > math.MaxInt {
 			return nil, sszutils.ErrPlatformOverflowFn("type size", targetType.Size)
 		}
@@ -391,7 +391,7 @@ func (ctx *ReflectionCtx) unmarshalTypeWrapper(targetType *ssztypes.TypeDescript
 func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth reflectionDepth) error {
 	// Fast path: containers with no dynamic fields (e.g. Validator)
 	if len(targetType.ContainerDesc.DynFields) == 0 {
-		sszSize := uint32(decoder.GetLength())
+		sszSize := int64(decoder.GetLength())
 		if sszSize < targetType.Len {
 			return sszutils.ErrFixedFieldsEOFFn(sszSize, targetType.Len)
 		}
@@ -430,7 +430,7 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 	// check is skipped; a short input surfaces as ErrUnexpectedEOF when the
 	// fixed section is read.
 	lengthKnown := decoder.LengthKnown()
-	sszSize := uint32(decoder.GetLength())
+	sszSize := int64(decoder.GetLength())
 	if lengthKnown && sszSize < targetType.Len {
 		return sszutils.ErrFixedFieldsEOFFn(sszSize, targetType.Len)
 	}
@@ -493,7 +493,7 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 			dynOffset = dynamicOffsets[0]
 		}
 
-		if dynOffset != targetType.Len { // check first dynamic field offset
+		if int64(dynOffset) != targetType.Len { // check first dynamic field offset
 			return sszutils.ErrorWithPathf(
 				sszutils.ErrFirstOffsetMismatchFn(dynOffset, targetType.Len),
 				"%s:o", targetType.ContainerDesc.DynFields[0].Field.Name,
@@ -501,14 +501,14 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 		}
 
 		for i, field := range targetType.ContainerDesc.DynFields {
-			startOffset := dynOffset
+			startOffset := int64(dynOffset)
 
 			// The trailing dynamic field runs to the end of the container, so in
 			// an open region it is the one field whose extent is unknown.
 			isTrailing := i == dynamicFieldCount-1
 			openField := isTrailing && !lengthKnown
 
-			var endOffset uint32
+			var endOffset int64
 			if !isTrailing {
 				if canSeek {
 					dynOffset = decoder.DecodeOffsetAt(startPos + int(targetType.ContainerDesc.DynFields[i+1].HeaderOffset))
@@ -516,7 +516,7 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 					dynOffset = dynamicOffsets[i+1]
 				}
 
-				endOffset = dynOffset
+				endOffset = int64(dynOffset)
 			} else {
 				endOffset = sszSize
 			}
@@ -536,8 +536,7 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 			if openField {
 				decoder.PushOpenLimit()
 			} else {
-				sszSize := endOffset - startOffset
-				decoder.PushLimit(int(sszSize))
+				decoder.PushLimit(int(endOffset - startOffset))
 			}
 
 			fieldDescriptor := field.Field
@@ -636,7 +635,7 @@ func expandSliceValue(target reflect.Value, sliceType reflect.Type, size int) re
 //   - Pointer elements are automatically initialized
 //   - Each element must consume exactly itemSize bytes
 func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth reflectionDepth) error {
-	vecLen := int64(targetType.Len)
+	vecLen := targetType.Len
 	if vecLen > math.MaxInt {
 		return sszutils.ErrPlatformOverflowFn("vector length", targetType.Len)
 	}
@@ -740,7 +739,7 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 //   - No offset points outside the data bounds
 //   - Each element consumes exactly the expected bytes
 func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth reflectionDepth) error {
-	dynVecLen := int64(targetType.Len)
+	dynVecLen := targetType.Len
 	if dynVecLen > math.MaxInt {
 		return sszutils.ErrPlatformOverflowFn("dynamic vector length", targetType.Len)
 	}
@@ -880,7 +879,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 // unmarshalFixedElements decodes a sequence of fixed-size elements into target slice/array positions.
 // It handles both pointer and non-pointer element types.
 func (ctx *ReflectionCtx) unmarshalFixedElements(fieldType *ssztypes.TypeDescriptor, newValue reflect.Value, count int, decoder sszutils.Decoder, depth reflectionDepth) error {
-	fieldSize := int64(fieldType.Size)
+	fieldSize := fieldType.Size
 	if fieldSize > math.MaxInt {
 		return sszutils.ErrPlatformOverflowFn("field size", fieldType.Size)
 	}
@@ -935,7 +934,7 @@ func (ctx *ReflectionCtx) unmarshalFixedElements(fieldType *ssztypes.TypeDescrip
 func (ctx *ReflectionCtx) unmarshalList(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth reflectionDepth) error {
 	fieldType := targetType.ElemDesc
 
-	elemSize := int64(fieldType.Size)
+	elemSize := fieldType.Size
 	if elemSize > math.MaxInt {
 		return sszutils.ErrPlatformOverflowFn("field size", fieldType.Size)
 	}
@@ -1022,10 +1021,10 @@ func (ctx *ReflectionCtx) unmarshalListUntilEOF(targetType *ssztypes.TypeDescrip
 
 	maxItems := -1
 	if targetType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
-		if targetType.Limit > math.MaxInt {
-			return sszutils.ErrPlatformOverflowFn("list limit", targetType.Limit)
-		}
-		maxItems = int(targetType.Limit)
+		// A limit above the platform integer range caps to MaxInt: the cap only
+		// bounds reads and allocations, which cannot reach that magnitude, while
+		// the limit itself keeps its full uint64 range.
+		maxItems = sszutils.CapToInt(targetType.Limit)
 	}
 
 	fieldT := targetType.Type
@@ -1423,11 +1422,10 @@ func (ctx *ReflectionCtx) unmarshalBitlist(targetType *ssztypes.TypeDescriptor, 
 	// stream) from forcing an arbitrarily large allocation.
 	maxBytes := -1
 	if targetType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
-		limitBytes := targetType.Limit/8 + 1
-		if limitBytes > math.MaxInt {
-			return sszutils.ErrPlatformOverflowFn("bitlist limit", targetType.Limit)
-		}
-		maxBytes = int(limitBytes)
+		// A byte cap above the platform integer range caps to MaxInt: it only
+		// bounds the read, which cannot reach that magnitude, while the limit
+		// itself keeps its full uint64 range.
+		maxBytes = sszutils.CapToInt(targetType.Limit/8 + 1)
 	}
 
 	if decoder.LengthKnown() {
