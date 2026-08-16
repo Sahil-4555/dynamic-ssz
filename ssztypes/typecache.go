@@ -1937,6 +1937,9 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 			byteLen := sizeHints[0].Size
 			if sizeHints[0].Bits {
 				desc.BitSize = sizeHints[0].Size
+				if byteLen > math.MaxInt64-7 {
+					return sszutils.ErrPlatformOverflowFn("bit-size hint for vector type", uint64(byteLen))
+				}
 				byteLen = (byteLen + 7) / 8 // ceil up to the next multiple of 8
 			}
 			if byteLen > desc.Len {
@@ -1948,6 +1951,9 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 		byteLen := sizeHints[0].Size
 		if sizeHints[0].Bits {
 			desc.BitSize = sizeHints[0].Size
+			if byteLen > math.MaxInt64-7 {
+				return sszutils.ErrPlatformOverflowFn("bit-size hint for vector type", uint64(byteLen))
+			}
 			byteLen = (byteLen + 7) / 8 // ceil up to the next multiple of 8
 		}
 		desc.Len = byteLen

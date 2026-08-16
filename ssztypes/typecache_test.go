@@ -911,6 +911,52 @@ func TestTypeCache_AnnotationSizeHintExceedsPlatformInt(t *testing.T) {
 	}
 }
 
+// A dynssz-bitsize expression resolving near math.MaxInt64 must error rather
+// than overflow int64 when converted to a byte length via (bits+7)/8: without
+// a guard, byteLen+7 wraps to a large negative number, silently caching a
+// negative desc.Len/desc.BitSize that panics on every later HashTreeRoot or
+// UnmarshalSSZ call against the type. Covers the slice/non-array vector branch.
+func TestTypeCache_BitsizeExpressionOverflowsByteConversion(t *testing.T) {
+	ds := &dummyDynamicSpecs{
+		specValues: map[string]uint64{"HUGE_BITS": uint64(math.MaxInt64)},
+	}
+	cache := NewTypeCache(ds)
+
+	type TestStruct struct {
+		BV []byte `ssz-type:"bitvector" dynssz-bitsize:"HUGE_BITS"`
+	}
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for dynssz-bitsize value overflowing the byte-length conversion")
+	}
+	if !errors.Is(err, sszutils.ErrPlatformOverflow) {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// Same overflow, but on the fixed Go array (schema-length) branch of
+// buildVectorDescriptor, which converts bits to bytes independently of the
+// slice branch above.
+func TestTypeCache_BitsizeExpressionOverflowsByteConversion_Array(t *testing.T) {
+	ds := &dummyDynamicSpecs{
+		specValues: map[string]uint64{"HUGE_BITS": uint64(math.MaxInt64)},
+	}
+	cache := NewTypeCache(ds)
+
+	type TestStruct struct {
+		BV [8]byte `ssz-type:"bitvector" dynssz-bitsize:"HUGE_BITS"`
+	}
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for dynssz-bitsize value overflowing the byte-length conversion")
+	}
+	if !errors.Is(err, sszutils.ErrPlatformOverflow) {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 // annotatedArrayDim carries an annotation whose first dimension is fixed by the
 // Go type. Tags are positional, so skipping it in both families is the only way
 // to reach the dimensions that do need a length and a limit.
