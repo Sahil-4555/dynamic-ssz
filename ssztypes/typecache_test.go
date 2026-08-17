@@ -913,7 +913,13 @@ func TestTypeCache_AnnotationSizeHintExceedsPlatformInt(t *testing.T) {
 
 // A bitsize of math.MaxInt64 must convert to a positive byte length, not
 // overflow int64 into a negative one (bits-to-bytes: []byte field).
+// 64-bit only: on 32-bit, math.MaxInt64 already exceeds math.MaxInt and is
+// rejected earlier by ResolveSpecValue's platform-range check, before ever
+// reaching the conversion this test targets.
 func TestTypeCache_BitsizeMaxInt64NoOverflow(t *testing.T) {
+	if math.MaxInt == math.MaxInt32 {
+		t.Skip("requires 64-bit platform")
+	}
 	ds := &dummyDynamicSpecs{
 		specValues: map[string]uint64{"HUGE_BITS": uint64(math.MaxInt64)},
 	}
@@ -944,6 +950,9 @@ func TestTypeCache_BitsizeMaxInt64NoOverflow(t *testing.T) {
 
 // Same as above, but for the fixed Go array field variant.
 func TestTypeCache_BitsizeMaxInt64NoOverflowArray(t *testing.T) {
+	if math.MaxInt == math.MaxInt32 {
+		t.Skip("requires 64-bit platform")
+	}
 	ds := &dummyDynamicSpecs{
 		specValues: map[string]uint64{"HUGE_BITS": uint64(math.MaxInt64)},
 	}
