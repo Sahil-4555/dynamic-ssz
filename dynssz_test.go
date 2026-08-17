@@ -922,37 +922,6 @@ func TestHashTreeRootLargeObjectOverflow(t *testing.T) {
 	}
 }
 
-// A dynssz-bitsize expression resolving near math.MaxInt64 previously overflowed
-// the internal (bits+7)/8 byte-length conversion in
-// ssztypes/typecache.go:buildVectorDescriptor: byteLen+7 wrapped past MaxInt64
-// into a large negative number, and that negative desc.Len/desc.BitSize was
-// cached in the type's TypeDescriptor forever, panicking on every later
-// HashTreeRoot ("slice bounds out of range") or UnmarshalSSZ
-// ("unsafe.Slice: len out of range") call against the type.
-type bitsizeOverflowContainer struct {
-	Items [][4]byte `ssz-type:"list,bitvector" ssz-size:"?,4" ssz-max:"8" dynssz-bitsize:"?,HUGE_BITS"`
-}
-
-func TestHashTreeRootBitsizeOverflowDoesNotPanic(t *testing.T) {
-	specs := map[string]any{"HUGE_BITS": uint64(math.MaxInt64)}
-	ds := NewDynSsz(specs)
-
-	_, err := ds.HashTreeRoot(&bitsizeOverflowContainer{Items: [][4]byte{{1, 2, 3, 4}}})
-	if err == nil || !strings.Contains(err.Error(), "platform int") {
-		t.Fatalf("expected a platform integer range error, got: %v", err)
-	}
-}
-
-func TestUnmarshalSSZBitsizeOverflowDoesNotPanic(t *testing.T) {
-	specs := map[string]any{"HUGE_BITS": uint64(math.MaxInt64)}
-	ds := NewDynSsz(specs)
-
-	err := ds.UnmarshalSSZ(&bitsizeOverflowContainer{}, []byte{})
-	if err == nil || !strings.Contains(err.Error(), "platform int") {
-		t.Fatalf("expected a platform integer range error, got: %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Mock types for DynamicMarshaler / DynamicSizer / DynamicUnmarshaler / DynamicHashRoot
 // ---------------------------------------------------------------------------

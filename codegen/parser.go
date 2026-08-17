@@ -997,7 +997,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			desc.Size = sizeHints[0].Size
 			if sizeHints[0].Bits {
 				desc.BitSize = sizeHints[0].Size
-				desc.Size = (desc.Size + 7) / 8 // ceil up to the next multiple of 8
+				desc.Size = int64((uint64(desc.Size) + 7) / 8) // ceil up to the next multiple of 8
 			}
 		} else {
 			desc.Size = 0
@@ -1455,7 +1455,8 @@ func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, dataType, 
 		if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
 			byteSize := sizeHints[0].Size
 			if sizeHints[0].Bits {
-				byteSize = (byteSize + 7) / 8 // ceil up to the next multiple of 8
+				// See the SszCustomType branch above: bounded input, uint64 domain avoids overflow.
+				byteSize = int64((uint64(byteSize) + 7) / 8) // ceil up to the next multiple of 8
 			}
 			if byteSize > length {
 				return fmt.Errorf("size hint for vector type is greater than the length of the array (%d > %d)", byteSize, length)
@@ -1468,7 +1469,8 @@ func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, dataType, 
 		case len(sizeHints) > 0 && sizeHints[0].Size > 0:
 			length = sizeHints[0].Size
 			if sizeHints[0].Bits {
-				length = (length + 7) / 8 // ceil up to the next multiple of 8
+				// See the SszCustomType branch above: bounded input, uint64 domain avoids overflow.
+				length = int64((uint64(length) + 7) / 8) // ceil up to the next multiple of 8
 			}
 		case len(sizeHints) > 0 && sizeHints[0].Expr != "":
 			// Length comes purely from a runtime dynssz-size expression with no
@@ -1485,7 +1487,8 @@ func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, dataType, 
 			case len(sizeHints) > 0 && sizeHints[0].Size > 0:
 				length = sizeHints[0].Size
 				if sizeHints[0].Bits {
-					length = (length + 7) / 8 // ceil up to the next multiple of 8
+					// See the SszCustomType branch above: bounded input, uint64 domain avoids overflow.
+					length = int64((uint64(length) + 7) / 8) // ceil up to the next multiple of 8
 				}
 				desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
 				schemaElemType = byteType

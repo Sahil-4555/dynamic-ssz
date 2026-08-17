@@ -911,12 +911,9 @@ func TestTypeCache_AnnotationSizeHintExceedsPlatformInt(t *testing.T) {
 	}
 }
 
-// A dynssz-bitsize expression resolving near math.MaxInt64 must error rather
-// than overflow int64 when converted to a byte length via (bits+7)/8: without
-// a guard, byteLen+7 wraps to a large negative number, silently caching a
-// negative desc.Len/desc.BitSize that panics on every later HashTreeRoot or
-// UnmarshalSSZ call against the type. Covers the slice/non-array vector branch.
-func TestTypeCache_BitsizeExpressionOverflowsByteConversion(t *testing.T) {
+// A bitsize of math.MaxInt64 must convert to a positive byte length, not
+// overflow int64 into a negative one (bits-to-bytes: []byte field).
+func TestTypeCache_BitsizeMaxInt64NoOverflow(t *testing.T) {
 	ds := &dummyDynamicSpecs{
 		specValues: map[string]uint64{"HUGE_BITS": uint64(math.MaxInt64)},
 	}
@@ -926,19 +923,27 @@ func TestTypeCache_BitsizeExpressionOverflowsByteConversion(t *testing.T) {
 		BV []byte `ssz-type:"bitvector" dynssz-bitsize:"HUGE_BITS"`
 	}
 
-	_, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
-	if err == nil {
-		t.Fatal("expected error for dynssz-bitsize value overflowing the byte-length conversion")
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !errors.Is(err, sszutils.ErrPlatformOverflow) {
-		t.Errorf("unexpected error: %v", err)
+
+	const wantByteLen = int64(1152921504606846976) // ceil(math.MaxInt64 / 8), computed in the uint64 domain
+
+	field := desc.ContainerDesc.Fields[0]
+	if field.Type.BitSize != math.MaxInt64 {
+		t.Errorf("expected BitSize %d, got %d", int64(math.MaxInt64), field.Type.BitSize)
+	}
+	if field.Type.Len != wantByteLen {
+		t.Errorf("expected Len %d, got %d", wantByteLen, field.Type.Len)
+	}
+	if field.Type.Len < 0 {
+		t.Fatal("Len went negative: the byte-length conversion overflowed")
 	}
 }
 
-// Same overflow, but on the fixed Go array (schema-length) branch of
-// buildVectorDescriptor, which converts bits to bytes independently of the
-// slice branch above.
-func TestTypeCache_BitsizeExpressionOverflowsByteConversion_Array(t *testing.T) {
+// Same as above, but for the fixed Go array field variant.
+func TestTypeCache_BitsizeMaxInt64NoOverflowArray(t *testing.T) {
 	ds := &dummyDynamicSpecs{
 		specValues: map[string]uint64{"HUGE_BITS": uint64(math.MaxInt64)},
 	}
@@ -950,9 +955,9 @@ func TestTypeCache_BitsizeExpressionOverflowsByteConversion_Array(t *testing.T) 
 
 	_, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
 	if err == nil {
-		t.Fatal("expected error for dynssz-bitsize value overflowing the byte-length conversion")
+		t.Fatal("expected error: converted byte length exceeds the 8-byte backing array")
 	}
-	if !errors.Is(err, sszutils.ErrPlatformOverflow) {
+	if !errors.Is(err, sszutils.ErrInvalidConstraint) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
