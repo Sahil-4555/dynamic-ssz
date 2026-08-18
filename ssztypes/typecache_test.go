@@ -911,6 +911,66 @@ func TestTypeCache_AnnotationSizeHintExceedsPlatformInt(t *testing.T) {
 	}
 }
 
+// A bitsize of math.MaxInt64 must convert to a positive byte length, not
+// overflow int64 into a negative one (bits-to-bytes: []byte field).
+// 64-bit only: on 32-bit, math.MaxInt64 already exceeds math.MaxInt and is
+// rejected earlier by ResolveSpecValue's platform-range check, before ever
+// reaching the conversion this test targets.
+func TestTypeCache_BitsizeMaxInt64NoOverflow(t *testing.T) {
+	if math.MaxInt == math.MaxInt32 {
+		t.Skip("requires 64-bit platform")
+	}
+	ds := &dummyDynamicSpecs{
+		specValues: map[string]uint64{"HUGE_BITS": uint64(math.MaxInt64)},
+	}
+	cache := NewTypeCache(ds)
+
+	type TestStruct struct {
+		BV []byte `ssz-type:"bitvector" dynssz-bitsize:"HUGE_BITS"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	const wantByteLen = int64(1152921504606846976) // ceil(math.MaxInt64 / 8), computed in the uint64 domain
+
+	field := desc.ContainerDesc.Fields[0]
+	if field.Type.BitSize != math.MaxInt64 {
+		t.Errorf("expected BitSize %d, got %d", int64(math.MaxInt64), field.Type.BitSize)
+	}
+	if field.Type.Len != wantByteLen {
+		t.Errorf("expected Len %d, got %d", wantByteLen, field.Type.Len)
+	}
+	if field.Type.Len < 0 {
+		t.Fatal("Len went negative: the byte-length conversion overflowed")
+	}
+}
+
+// Same as above, but for the fixed Go array field variant.
+func TestTypeCache_BitsizeMaxInt64NoOverflowArray(t *testing.T) {
+	if math.MaxInt == math.MaxInt32 {
+		t.Skip("requires 64-bit platform")
+	}
+	ds := &dummyDynamicSpecs{
+		specValues: map[string]uint64{"HUGE_BITS": uint64(math.MaxInt64)},
+	}
+	cache := NewTypeCache(ds)
+
+	type TestStruct struct {
+		BV [8]byte `ssz-type:"bitvector" dynssz-bitsize:"HUGE_BITS"`
+	}
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error: converted byte length exceeds the 8-byte backing array")
+	}
+	if !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 // annotatedArrayDim carries an annotation whose first dimension is fixed by the
 // Go type. Tags are positional, so skipping it in both families is the only way
 // to reach the dimensions that do need a length and a limit.
